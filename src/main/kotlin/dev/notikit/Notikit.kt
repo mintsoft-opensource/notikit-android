@@ -17,19 +17,17 @@ class NotikitException(message: String, val status: Int) : Exception(message)
  * Notikit Android/Kotlin SDK — 유저 중심 푸시 등록/식별.
  * FCM 토큰은 Firebase Messaging 이 획득하고, 이 SDK 가 서버에 등록한다.
  *
- * @param apiSecret 발송 등 서버 전용 작업에만. 앱에는 넣지 말 것(공개키만 사용).
+ * 클라이언트 SDK 는 공개 api-key 만 사용(발송용 api-secret 미포함).
  */
 class Notikit @JvmOverloads constructor(
     baseUrl: String,
     private val apiKey: String,
-    private val apiSecret: String? = null,
     private val transport: HttpTransport = DefaultHttpTransport(),
 ) {
     private val baseUrl: String = baseUrl.trimEnd('/')
 
     private fun post(path: String, body: JSONObject): JSONObject {
         val headers = mutableMapOf("content-type" to "application/json", "api-key" to apiKey)
-        apiSecret?.let { headers["api-secret"] = it }
 
         val res = transport.post("$baseUrl$path", headers, body.toString())
         val json = try { JSONObject(res.body) } catch (e: Exception) {
