@@ -71,6 +71,36 @@ class Notikit @JvmOverloads constructor(
     fun subscribe(topic: String, token: String): JSONObject {
         return post("/api/v1/topics/subscribe", JSONObject().put("topic", topic).put("token", token))
     }
+
+    /**
+     * 디바이스 바인딩 해제 (로그아웃/계정전환).
+     * 해제하지 않으면 이후 클릭이 이전 계정에 계속 귀속된다.
+     */
+    fun unbindDevice(token: String, platform: String): JSONObject {
+        val body = JSONObject().put("token", token).put("platform", platform).put("external_id", JSONObject.NULL)
+        return post("/api/v1/devices", body)
+    }
+
+    /**
+     * 푸시 클릭(알림 탭) 보고.
+     * 유저는 서버가 토큰의 바인딩에서 해석하므로 external_id 를 보내지 않는다.
+     */
+    @JvmOverloads
+    fun reportClick(logId: String, token: String, destination: String? = null): JSONObject {
+        val body = JSONObject().put("log_id", logId).put("token", token)
+        destination?.let { body.put("destination", it) }
+        return post("/api/v1/messages/click", body)
+    }
+
+    companion object {
+        /** 푸시 페이로드에서 notikit 이 예약해 쓰는 data 키 */
+        const val LOG_ID_KEY: String = "notikit_log_id"
+
+        /** FCM data 에서 발송 id 추출 — 없으면 notikit 발송이 아니다 */
+        @JvmStatic
+        fun logIdFromPayload(data: Map<String, String>?): String? =
+            data?.get(LOG_ID_KEY)?.takeIf { it.isNotEmpty() }
+    }
 }
 
 internal class DefaultHttpTransport : HttpTransport {
