@@ -68,6 +68,14 @@ class Notikit @JvmOverloads constructor(
         return post("/api/v1/users/identify", body)
     }
 
+    /**
+     * 앱 열림 보고 — 접속 통계(DAU/WAU/MAU)의 원천.
+     * registerDevice 는 무거우므로 앱을 열 때마다는 이쪽을 쓴다.
+     */
+    fun ping(token: String): JSONObject {
+        return post("/api/v1/devices/ping", JSONObject().put("token", token))
+    }
+
     fun subscribe(topic: String, token: String): JSONObject {
         return post("/api/v1/topics/subscribe", JSONObject().put("topic", topic).put("token", token))
     }
