@@ -92,6 +92,26 @@ class NotikitSession @JvmOverloads constructor(
         false
     }
 
+    /**
+     * 알림 탭 처리 — 푸시 data 맵을 그대로 넘기면 된다.
+     *
+     * 탭 이벤트를 받는 자리는 앱마다 다르다(런처 Activity 의 intent.extras,
+     * FirebaseMessagingService, 커스텀 Receiver). SDK 가 그 자리를 대신 잡을 수 없어
+     * 공통 부분만 처리한다: 발송 id 를 꺼내 클릭을 보고한다.
+     *
+     * Activity 에서:
+     *     val data = intent.extras?.keySet()?.associateWith { intent.extras!!.getString(it) ?: "" } ?: emptyMap()
+     *     session.handleNotificationOpen(data, token)
+     *
+     * notikit 이 보낸 알림이 아니면 아무 것도 하지 않는다 — 다른 경로의 알림까지
+     * 클릭으로 세면 클릭률이 부풀려진다.
+     */
+    @JvmOverloads
+    fun handleNotificationOpen(data: Map<String, String>?, token: String, destination: String? = null): Boolean {
+        val logId = Notikit.logIdFromPayload(data) ?: return false
+        return reportClick(logId, token, destination)
+    }
+
     /** 밀린 클릭 재전송 — SDK 초기화 직후·앱 포그라운드 진입 시 호출 */
     fun flush(): Int {
         retryPendingUnbind()
