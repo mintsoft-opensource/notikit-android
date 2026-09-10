@@ -117,7 +117,7 @@ class NotikitSession @JvmOverloads constructor(
         retryPendingUnbind()
 
         val queue = readQueue()
-        if (queue.isEmpty()) return 0
+        if (queue.length() == 0) return 0
 
         val now = System.currentTimeMillis()
         val current = getUser()?.externalId
