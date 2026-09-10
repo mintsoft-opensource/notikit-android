@@ -76,8 +76,11 @@ class Notikit @JvmOverloads constructor(
      * 디바이스 바인딩 해제 (로그아웃/계정전환).
      * 해제하지 않으면 이후 클릭이 이전 계정에 계속 귀속된다.
      */
-    fun unbindDevice(token: String, platform: String): JSONObject {
+    @JvmOverloads
+    fun unbindDevice(token: String, platform: String, identityHash: String? = null): JSONObject {
         val body = JSONObject().put("token", token).put("platform", platform).put("external_id", JSONObject.NULL)
+        // 서버가 현재 바인딩된 유저의 해시를 검증한다 — 남의 토큰으로 해제하는 것을 막는다
+        identityHash?.let { body.put("identity_hash", it) }
         return post("/api/v1/devices", body)
     }
 

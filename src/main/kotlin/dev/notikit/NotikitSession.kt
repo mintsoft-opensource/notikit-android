@@ -51,6 +51,7 @@ class NotikitSession @JvmOverloads constructor(
 
     /** 로그인 — 유저를 저장하고 디바이스를 그 유저에 바인딩한다. */
     fun login(user: StoredUser, token: String) {
+        storage.remove(UNBIND_KEY) // 새 바인딩이 덮어쓰므로 밀린 언바인딩은 의미 없다
         val o = JSONObject().put("externalId", user.externalId)
         user.identityHash?.let { o.put("identityHash", it) }
         storage.set(USER_KEY, o.toString())
@@ -62,8 +63,20 @@ class NotikitSession @JvmOverloads constructor(
      * 해제를 빠뜨리면 공용 기기에서 다음 사람의 클릭이 이전 계정에 붙는다.
      */
     fun logout(token: String) {
+        val user = getUser()
         storage.remove(USER_KEY)
-        client.unbindDevice(token, platform)
+        // 이전 세션의 밀린 클릭은 버린다 — 지금 보내면 다음 로그인 유저에게 붙는다
+        storage.remove(QUEUE_KEY)
+        try {
+            client.unbindDevice(token, platform, user?.identityHash)
+        } catch (e: Exception) {
+            // 로그아웃은 오프라인에서 가장 자주 일어난다. 포기하면 서버 바인딩이 이전
+            // 유저로 남아 다음 사람의 클릭이 그 유저에게 붙는다 — 재시도용으로 남긴다.
+            val pending = JSONObject().put("token", token).put("at", System.currentTimeMillis())
+            user?.identityHash?.let { pending.put("identityHash", it) }
+            storage.set(UNBIND_KEY, pending.toString())
+            throw e
+        }
     }
 
     /**
@@ -81,19 +94,29 @@ class NotikitSession @JvmOverloads constructor(
 
     /** 밀린 클릭 재전송 — SDK 초기화 직후·앱 포그라운드 진입 시 호출 */
     fun flush(): Int {
+        retryPendingUnbind()
+
         val queue = readQueue()
         if (queue.isEmpty()) return 0
 
         val now = System.currentTimeMillis()
+        val current = getUser()?.externalId
         val failed = JSONArray()
         var sent = 0
 
         for (i in 0 until queue.length()) {
             val c = queue.optJSONObject(i) ?: continue
             if (now - c.optLong("at") >= QUEUE_TTL_MS) continue // 오래된 클릭은 버린다
+            // 클릭 당시 유저와 지금 유저가 다르면 보내지 않는다 — 서버는 flush 시점의
+            // 바인딩으로 유저를 해석하므로 다음 사람에게 귀속된다
+            val owner = c.optString("externalId").ifEmpty { null }
+            if (owner != current) continue
             try {
                 client.reportClick(c.getString("logId"), c.getString("token"), c.optString("destination").ifEmpty { null })
                 sent++
+            } catch (e: NotikitException) {
+                // 4xx 는 재시도해도 같다(토큰 교체로 404 등) — 7일간 두드리지 않고 버린다
+                if (e.status < 400 || e.status >= 500 || e.status == 429) failed.put(c)
             } catch (e: Exception) {
                 failed.put(c)
             }
@@ -103,6 +126,19 @@ class NotikitSession @JvmOverloads constructor(
         return sent
     }
 
+    /** 실패해 남아 있던 언바인딩 재시도 — 성공할 때까지 서버 바인딩이 이전 유저로 남는다 */
+    private fun retryPendingUnbind() {
+        val raw = storage.get(UNBIND_KEY) ?: return
+        val o = try { JSONObject(raw) } catch (e: Exception) { storage.remove(UNBIND_KEY); return }
+        val token = o.optString("token").ifEmpty { null } ?: run { storage.remove(UNBIND_KEY); return }
+        try {
+            client.unbindDevice(token, platform, o.optString("identityHash").ifEmpty { null })
+            storage.remove(UNBIND_KEY)
+        } catch (e: Exception) {
+            /* 다음 flush 에서 재시도 */
+        }
+    }
+
     private fun readQueue(): JSONArray = try {
         storage.get(QUEUE_KEY)?.let { JSONArray(it) } ?: JSONArray()
     } catch (e: Exception) {
@@ -110,6 +146,7 @@ class NotikitSession @JvmOverloads constructor(
     }
 
     private fun enqueue(logId: String, token: String, destination: String?) {
+        val owner = getUser()?.externalId
         val queue = readQueue()
         // 같은 발송의 중복 클릭은 서버에서도 유니크로 걸리므로 큐 단계에서 미리 접는다
         for (i in 0 until queue.length()) {
@@ -121,6 +158,7 @@ class NotikitSession @JvmOverloads constructor(
             .put("token", token)
             .put("at", System.currentTimeMillis())
         destination?.let { entry.put("destination", it) }
+        owner?.let { entry.put("externalId", it) }
         queue.put(entry)
 
         val trimmed = if (queue.length() > QUEUE_MAX) {
@@ -132,6 +170,7 @@ class NotikitSession @JvmOverloads constructor(
     private companion object {
         const val USER_KEY = "notikit.user"
         const val QUEUE_KEY = "notikit.clickQueue"
+        const val UNBIND_KEY = "notikit.pendingUnbind"
         const val QUEUE_MAX = 50
         const val QUEUE_TTL_MS = 7L * 24 * 60 * 60 * 1000
     }
