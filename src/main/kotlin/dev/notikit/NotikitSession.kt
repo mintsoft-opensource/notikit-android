@@ -1,5 +1,7 @@
 package dev.notikit
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -39,6 +41,12 @@ class NotikitSession @JvmOverloads constructor(
     private val storage: NotikitStorage,
     private val platform: String = "android",
 ) {
+    /**
+     * 클릭 큐(저장소 문자열 하나)의 read-modify-write 를 직렬화.
+     * flush 안에서 네트워크를 기다리므로(suspend) synchronized 는 쓸 수 없다.
+     */
+    private val queueLock = Mutex()
+
     fun getUser(): StoredUser? {
         val raw = storage.get(USER_KEY) ?: return null
         return try {
@@ -50,19 +58,42 @@ class NotikitSession @JvmOverloads constructor(
     }
 
     /** 로그인 — 유저를 저장하고 디바이스를 그 유저에 바인딩한다. */
-    fun login(user: StoredUser, token: String) {
-        storage.remove(UNBIND_KEY) // 새 바인딩이 덮어쓰므로 밀린 언바인딩은 의미 없다
+    suspend fun login(user: StoredUser, token: String) {
         val o = JSONObject().put("externalId", user.externalId)
         user.identityHash?.let { o.put("identityHash", it) }
         storage.set(USER_KEY, o.toString())
         client.registerDevice(token, platform, user.externalId, user.identityHash)
+        // 밀린 언바인딩은 **새 바인딩이 실제로 서버에 반영된 뒤에만** 버린다.
+        // 먼저 지우면, 오프라인 로그아웃 후 오프라인 로그인이 실패했을 때 이전 유저의
+        // 해제 요청이 사라져 서버는 기기를 계속 이전 유저로 본다.
+        storage.remove(UNBIND_KEY)
+    }
+
+    /**
+     * 푸시 토큰 교체 (FirebaseMessagingService.onNewToken).
+     *
+     * 서버에서 기존 기기 행을 갱신하고, **밀린 클릭의 토큰도 함께 바꾼다**. 큐는
+     * 클릭 당시 토큰을 들고 있어서, 교체 후 그대로 보내면 서버가 기기를 못 찾아
+     * 404 를 주고 4xx 정책에 걸려 전부 버려진다.
+     */
+    suspend fun rotateToken(oldToken: String, newToken: String) {
+        client.rotateToken(oldToken, newToken, getUser()?.identityHash)
+        queueLock.withLock {
+            val queue = readQueue()
+            if (queue.length() == 0) return@withLock
+            for (i in 0 until queue.length()) {
+                val c = queue.optJSONObject(i) ?: continue
+                if (c.optString("token") == oldToken) c.put("token", newToken)
+            }
+            storage.set(QUEUE_KEY, queue.toString())
+        }
     }
 
     /**
      * 로그아웃 — 저장된 유저를 지우고 서버 바인딩도 해제한다.
      * 해제를 빠뜨리면 공용 기기에서 다음 사람의 클릭이 이전 계정에 붙는다.
      */
-    fun logout(token: String) {
+    suspend fun logout(token: String) {
         val user = getUser()
         storage.remove(USER_KEY)
         // 이전 세션의 밀린 클릭은 버린다 — 지금 보내면 다음 로그인 유저에게 붙는다
@@ -84,7 +115,7 @@ class NotikitSession @JvmOverloads constructor(
      * (콜드 스타트 직후·오프라인에서 클릭이 조용히 유실되면 클릭률이 낮게 잡힌다).
      */
     @JvmOverloads
-    fun reportClick(logId: String, token: String, destination: String? = null): Boolean = try {
+    suspend fun reportClick(logId: String, token: String, destination: String? = null): Boolean = try {
         client.reportClick(logId, token, destination)
         true
     } catch (e: Exception) {
@@ -107,13 +138,21 @@ class NotikitSession @JvmOverloads constructor(
      * 클릭으로 세면 클릭률이 부풀려진다.
      */
     @JvmOverloads
-    fun handleNotificationOpen(data: Map<String, String>?, token: String, destination: String? = null): Boolean {
+    suspend fun handleNotificationOpen(data: Map<String, String>?, token: String, destination: String? = null): Boolean {
         val logId = Notikit.logIdFromPayload(data) ?: return false
         return reportClick(logId, token, destination)
     }
 
-    /** 밀린 클릭 재전송 — SDK 초기화 직후·앱 포그라운드 진입 시 호출 */
-    fun flush(): Int {
+    /**
+     * 밀린 클릭 재전송 — SDK 초기화 직후·앱 포그라운드 진입 시 호출.
+     *
+     * 큐 전체를 락으로 감싼다. flush 와 enqueue 는 같은 문자열 하나에 대한
+     * read-modify-write 라, 네트워크가 도는 사이 들어온 클릭이 마지막 쓰기에
+     * 덮여 사라진다. 락을 마지막 쓰기에만 걸면 그 창이 그대로 남는다.
+     */
+    suspend fun flush(): Int = queueLock.withLock { flushLocked() }
+
+    private suspend fun flushLocked(): Int {
         retryPendingUnbind()
 
         val queue = readQueue()
@@ -130,7 +169,14 @@ class NotikitSession @JvmOverloads constructor(
             // 클릭 당시 유저와 지금 유저가 다르면 보내지 않는다 — 서버는 flush 시점의
             // 바인딩으로 유저를 해석하므로 다음 사람에게 귀속된다
             val owner = c.optString("externalId").ifEmpty { null }
-            if (owner != current) continue
+            // 지금 보내면 다음 사람에게 귀속되므로 보내지 않되, **버리지도 않는다**.
+            // 비로그인 상태의 탭이 오프라인으로 큐에 남았다가 로그인하면 owner(null)와
+            // current 가 어긋나는데, 여기서 폐기하면 그 클릭이 영영 사라진다
+            // (로그인 유도 푸시가 정확히 이 경로를 밟는다). TTL 이 수명을 제한한다.
+            if (owner != current) {
+                failed.put(c)
+                continue
+            }
             try {
                 client.reportClick(c.getString("logId"), c.getString("token"), c.optString("destination").ifEmpty { null })
                 sent++
@@ -147,7 +193,7 @@ class NotikitSession @JvmOverloads constructor(
     }
 
     /** 실패해 남아 있던 언바인딩 재시도 — 성공할 때까지 서버 바인딩이 이전 유저로 남는다 */
-    private fun retryPendingUnbind() {
+    private suspend fun retryPendingUnbind() {
         val raw = storage.get(UNBIND_KEY) ?: return
         val o = try { JSONObject(raw) } catch (e: Exception) { storage.remove(UNBIND_KEY); return }
         val token = o.optString("token").ifEmpty { null } ?: run { storage.remove(UNBIND_KEY); return }
@@ -165,7 +211,7 @@ class NotikitSession @JvmOverloads constructor(
         JSONArray()
     }
 
-    private fun enqueue(logId: String, token: String, destination: String?) {
+    private suspend fun enqueue(logId: String, token: String, destination: String?) = queueLock.withLock {
         val owner = getUser()?.externalId
         val queue = readQueue()
         // 같은 발송의 중복 클릭은 서버에서도 유니크로 걸리므로 큐 단계에서 미리 접는다

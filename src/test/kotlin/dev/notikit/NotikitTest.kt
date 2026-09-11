@@ -1,5 +1,6 @@
 package dev.notikit
 
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,7 +20,7 @@ class FakeTransport(private val status: Int, private val body: String) : HttpTra
 
 class NotikitTest {
     @Test
-    fun registerDeviceSendsApiKeyAndPayload() {
+    fun registerDeviceSendsApiKeyAndPayload() = runTest {
         val fake = FakeTransport(201, """{"success":true,"data":{"device":{}},"error":null}""")
         val notikit = Notikit("https://push.test/", "nk_test", transport = fake)
 
@@ -33,7 +34,7 @@ class NotikitTest {
     }
 
     @Test
-    fun omitsApiSecretWhenNotProvided() {
+    fun omitsApiSecretWhenNotProvided() = runTest {
         val fake = FakeTransport(200, """{"success":true,"data":{},"error":null}""")
         val notikit = Notikit("https://push.test", "nk", transport = fake)
         notikit.subscribe("news", "t1")
@@ -41,7 +42,7 @@ class NotikitTest {
     }
 
     @Test
-    fun throwsOnFailure() {
+    fun throwsOnFailure() = runTest {
         val fake = FakeTransport(401, """{"success":false,"data":null,"error":"Unauthorized"}""")
         val notikit = Notikit("https://push.test", "nk", transport = fake)
         assertFailsWith<NotikitException> { notikit.identify("u1") }

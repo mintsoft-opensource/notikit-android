@@ -4,8 +4,9 @@
 
 ## 알림 탭 자동 보고
 
-`Application` 에서 한 번만 설치하면 알림 탭이 자동으로 보고된다. 앱 코드에서
-Intent 를 직접 읽을 필요가 없다.
+`Application` 에서 한 번 설치하면 **콜드 스타트** 탭이 자동으로 보고된다. 앱 코드에서
+Intent 를 직접 읽을 필요가 없다. 앱이 이미 떠 있는 상태의 탭(warm start)만 한 줄 배선이
+필요하다 — 아래 참조.
 
 ```kotlin
 class MyApp : Application() {
@@ -17,6 +18,21 @@ class MyApp : Application() {
         // 토큰은 갱신되므로 값이 아니라 콜백으로 넘긴다
         session = NotikitAndroid.install(this, client) { currentFcmToken }
     }
+}
+```
+
+### warm start (앱이 떠 있을 때의 탭)
+
+`ActivityLifecycleCallbacks` 에는 `onNewIntent` 가 없고, singleTop/singleTask Activity 는
+알림 Intent 를 `onNewIntent` 로 받는다. 이때 `getIntent()` 는 **원래 실행 Intent 를 계속**
+돌려주므로(안드로이드 문서) SDK 가 생명주기만 봐서는 이 탭을 볼 수 없다. 런처 Activity 에
+다음을 추가한다.
+
+```kotlin
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    NotikitAndroid.onNewIntent(intent)
 }
 ```
 
@@ -41,13 +57,18 @@ dependencies {
 ```
 
 ## 사용 (Kotlin)
+
+공개 메서드는 전부 `suspend` 이고 내부에서 `Dispatchers.IO` 로 옮기므로 **메인 스레드에서
+불러도 안전하다**. 직접 스레드를 옮길 필요가 없다.
+
 ```kotlin
 import com.google.firebase.messaging.FirebaseMessaging
 import dev.notikit.Notikit
 
 val notikit = Notikit(baseUrl = "https://push.example.com", apiKey = "nk_xxx") // 공개키만
 
-FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+lifecycleScope.launch {
+    val token = FirebaseMessaging.getInstance().token.await()
     notikit.registerDevice(
         token = token,
         platform = "android",
@@ -57,11 +78,34 @@ FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
 }
 ```
 
-## 사용 (Java)
-```java
-Notikit notikit = new Notikit("https://push.example.com", "nk_xxx");
-notikit.registerDevice(token, "android", "user-123", hash, null, null);
+### 토큰 교체
+
+`registerDevice` 를 새 토큰으로 부르면 **행이 하나 더 생겨** 같은 사람에게 중복 발송된다.
+교체는 전용 메서드를 쓴다 — 서버가 기존 행을 제자리 갱신해 토픽 구독·클릭 이력이 보존되고,
+밀린 클릭의 토큰도 함께 갱신된다.
+
+```kotlin
+class MyMessagingService : FirebaseMessagingService() {
+    override fun onNewToken(token: String) {
+        val old = lastKnownToken ?: return
+        CoroutineScope(Dispatchers.IO).launch { session.rotateToken(old, token) }
+        lastKnownToken = token
+    }
+}
 ```
+
+## 사용 (Java)
+
+Java 는 `suspend` 함수를 부를 수 없어 블로킹 파사드를 제공한다. **이름 그대로 막히므로
+반드시 백그라운드 스레드에서** 호출한다.
+
+```java
+NotikitBlocking notikit = new NotikitBlocking(new Notikit("https://push.example.com", "nk_xxx"));
+ExecutorService io = Executors.newSingleThreadExecutor();
+io.execute(() -> notikit.registerDevice(token, "android", "user-123", hash));
+```
+
+`NotikitAndroid.install` 이 돌려주는 세션은 `NotikitSessionBlocking` 으로 감싸 쓴다.
 
 ## API
 | | 설명 |
