@@ -88,8 +88,19 @@ class Notikit @JvmOverloads constructor(
         return post("/api/v1/devices/ping", JSONObject().put("token", token))
     }
 
+    /** 토픽 구독. 규칙으로 채워지는 토픽은 명단이 자동으로 정해지므로 409 가 온다. */
     suspend fun subscribe(topic: String, token: String): JSONObject {
         return post("/api/v1/topics/subscribe", JSONObject().put("topic", topic).put("token", token))
+    }
+
+    /**
+     * 토픽 구독 해지.
+     *
+     * 알림 설정 토글을 끄는 경로다. 이게 없으면 유저가 한 번 켠 토픽을 앱에서 끌 수 없다.
+     * 구독과 달리 없는 토픽을 만들지 않는다 — 없으면 404.
+     */
+    suspend fun unsubscribe(topic: String, token: String): JSONObject {
+        return post("/api/v1/topics/unsubscribe", JSONObject().put("topic", topic).put("token", token))
     }
 
     /**
