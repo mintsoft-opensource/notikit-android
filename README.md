@@ -113,6 +113,9 @@ io.execute(() -> notikit.registerDevice(token, "android", "user-123", hash));
 | `registerDevice(token, platform, externalId?, identityHash?, ...)` | FCM 토큰 등록 |
 | `identify(externalId, identityHash?, attributes?)` | 유저 식별 |
 | `subscribe(topic, token)` | 토픽 구독 |
+| `unsubscribe(topic, token)` | 토픽 구독 해지 |
+| `Notikit.customDataFromPayload(data)` | 받은 푸시에서 커스텀 필드(템플릿 필드 포함)만 꺼내기 |
+| `Notikit.deepLinkFromPayload(data)` | 받은 푸시의 딥링크 |
 
 - `api-secret` 은 서버 전용 — 앱에는 넣지 마세요(공개 api-key 만).
 - 빌드: JDK 17 (툴체인 자동 provisioning). `gradle test`

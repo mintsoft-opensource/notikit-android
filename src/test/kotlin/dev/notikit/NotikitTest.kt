@@ -47,4 +47,20 @@ class NotikitTest {
         val notikit = Notikit("https://push.test", "nk", transport = fake)
         assertFailsWith<NotikitException> { notikit.identify("u1") }
     }
+
+    @Test
+    fun customDataSkipsNotikitAndFcmKeys() {
+        val payload = mapOf(
+            "notikit_log_id" to "log1",
+            "deep_link" to "myapp://orders",
+            "google.message_id" to "x",
+            "gcm.n.e" to "1",
+            "from" to "123",
+            "order_id" to "A-1",
+            "screen" to "order",
+        )
+        assertEquals(mapOf("order_id" to "A-1", "screen" to "order"), Notikit.customDataFromPayload(payload))
+        assertEquals("myapp://orders", Notikit.deepLinkFromPayload(payload))
+        assertEquals(emptyMap(), Notikit.customDataFromPayload(null))
+    }
 }

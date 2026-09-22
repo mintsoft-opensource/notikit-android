@@ -150,6 +150,26 @@ class Notikit @JvmOverloads constructor(
         @JvmStatic
         fun logIdFromPayload(data: Map<String, String>?): String? =
             data?.get(LOG_ID_KEY)?.takeIf { it.isNotEmpty() }
+
+        /** 푸시 data 에서 딥링크 추출 */
+        @JvmStatic
+        fun deepLinkFromPayload(data: Map<String, String>?): String? =
+            data?.get("deep_link")?.takeIf { it.isNotEmpty() }
+
+        /** notikit·FCM 이 쓰는 키. 이것을 뺀 나머지가 발송 때 넣은 커스텀 필드다(서버의 금지 키 목록과 같다). */
+        private val INTERNAL_KEYS = setOf(
+            "deep_link", LOG_ID_KEY, "title", "body", "icon",
+            "from", "collapse_key", "notification", "message_type", "fcm_options",
+        )
+        private val INTERNAL_PREFIXES = listOf("google.", "gcm.")
+
+        /**
+         * 발송 때 넣은 커스텀 필드(템플릿 필드 포함)만 골라낸다.
+         * `RemoteMessage.data` 나 알림 탭 Intent 의 extras 를 그대로 넘기면 된다.
+         */
+        @JvmStatic
+        fun customDataFromPayload(data: Map<String, String>?): Map<String, String> =
+            data.orEmpty().filterKeys { k -> k !in INTERNAL_KEYS && INTERNAL_PREFIXES.none { k.startsWith(it) } }
     }
 }
 
