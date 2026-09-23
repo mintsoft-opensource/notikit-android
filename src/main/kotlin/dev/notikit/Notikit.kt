@@ -51,11 +51,12 @@ class Notikit @JvmOverloads constructor(
         json.optJSONObject("data") ?: JSONObject()
     }
 
+    /** 디바이스 등록·업서트. userId(고객 서비스의 유저 id)가 있으면 그 유저에 연결한다. */
     @JvmOverloads
     suspend fun registerDevice(
         token: String,
         platform: String,
-        externalId: String? = null,
+        userId: String? = null,
         identityHash: String? = null,
         locale: String? = null,
         timezone: String? = null,
@@ -63,8 +64,8 @@ class Notikit @JvmOverloads constructor(
         val body = JSONObject()
             .put("token", token)
             .put("platform", platform)
-        externalId?.let {
-            body.put("external_id", it)
+        userId?.let {
+            body.put("user_id", it)
             identityHash?.let { h -> body.put("identity_hash", h) }
         }
         locale?.let { body.put("locale", it) }
@@ -72,13 +73,50 @@ class Notikit @JvmOverloads constructor(
         return post("/api/v1/devices", body)
     }
 
+    /** `externalId =` 로 부르던 기존 호출을 살려 둔다. 마지막 인자는 오버로드 구분용이다. */
+    @Deprecated(
+        "Use userId",
+        ReplaceWith("registerDevice(token, platform, userId = externalId, identityHash = identityHash, locale = locale, timezone = timezone)"),
+    )
+    @JvmSynthetic
+    suspend fun registerDevice(
+        token: String,
+        platform: String,
+        externalId: String?,
+        identityHash: String? = null,
+        locale: String? = null,
+        timezone: String? = null,
+        @Suppress("UNUSED_PARAMETER") legacy: Unit = Unit,
+    ): JSONObject = registerDevice(token, platform, externalId, identityHash, locale, timezone)
+
+    /** 유저 식별. name 은 치환 변수 {{name}} 과 콘솔 표시에 쓰인다 */
     @JvmOverloads
-    suspend fun identify(externalId: String, identityHash: String? = null, attributes: Map<String, Any?>? = null): JSONObject {
-        val body = JSONObject().put("external_id", externalId)
+    suspend fun identify(
+        userId: String,
+        identityHash: String? = null,
+        attributes: Map<String, Any?>? = null,
+        name: String? = null,
+    ): JSONObject {
+        val body = JSONObject().put("user_id", userId)
         identityHash?.let { body.put("identity_hash", it) }
+        name?.let { body.put("name", it) }
         attributes?.let { body.put("attributes", JSONObject(it)) }
         return post("/api/v1/users/identify", body)
     }
+
+    /** `externalId =` 로 부르던 기존 호출을 살려 둔다. 마지막 인자는 오버로드 구분용이다. */
+    @Deprecated(
+        "Use userId",
+        ReplaceWith("identify(userId = externalId, identityHash = identityHash, attributes = attributes, name = name)"),
+    )
+    @JvmSynthetic
+    suspend fun identify(
+        externalId: String,
+        identityHash: String? = null,
+        attributes: Map<String, Any?>? = null,
+        name: String? = null,
+        @Suppress("UNUSED_PARAMETER") legacy: Unit = Unit,
+    ): JSONObject = identify(externalId, identityHash, attributes, name)
 
     /**
      * 앱 열림 보고 — 접속 통계(DAU/WAU/MAU)의 원천.
@@ -109,7 +147,7 @@ class Notikit @JvmOverloads constructor(
      */
     @JvmOverloads
     suspend fun unbindDevice(token: String, platform: String, identityHash: String? = null): JSONObject {
-        val body = JSONObject().put("token", token).put("platform", platform).put("external_id", JSONObject.NULL)
+        val body = JSONObject().put("token", token).put("platform", platform).put("user_id", JSONObject.NULL)
         // 서버가 현재 바인딩된 유저의 해시를 검증한다 — 남의 토큰으로 해제하는 것을 막는다
         identityHash?.let { body.put("identity_hash", it) }
         return post("/api/v1/devices", body)
@@ -133,7 +171,7 @@ class Notikit @JvmOverloads constructor(
 
     /**
      * 푸시 클릭(알림 탭) 보고.
-     * 유저는 서버가 토큰의 바인딩에서 해석하므로 external_id 를 보내지 않는다.
+     * 유저는 서버가 토큰의 바인딩에서 해석하므로 user_id 를 보내지 않는다.
      */
     @JvmOverloads
     suspend fun reportClick(logId: String, token: String, destination: String? = null): JSONObject {
@@ -158,7 +196,7 @@ class Notikit @JvmOverloads constructor(
 
         /** notikit·FCM 이 쓰는 키. 이것을 뺀 나머지가 발송 때 넣은 커스텀 필드다(서버의 금지 키 목록과 같다). */
         private val INTERNAL_KEYS = setOf(
-            "deep_link", LOG_ID_KEY, "title", "body", "icon",
+            "deep_link", LOG_ID_KEY, "title", "body", "icon", "image",
             "from", "collapse_key", "notification", "message_type", "fcm_options",
         )
         private val INTERNAL_PREFIXES = listOf("google.", "gcm.")

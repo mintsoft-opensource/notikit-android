@@ -24,14 +24,25 @@ interface NotikitStorage {
     fun remove(key: String)
 }
 
-/** 로그인 시 저장해두는 유저 */
-data class StoredUser(val externalId: String, val identityHash: String? = null)
+/** 로그인 시 저장해두는 유저. userId 는 고객 서비스의 유저 id 다. */
+data class StoredUser(val userId: String, val identityHash: String? = null) {
+    /** `StoredUser(externalId = ...)` 로 만들던 기존 호출을 살려 둔다. 마지막 인자는 오버로드 구분용이다. */
+    @Deprecated("Use userId", ReplaceWith("StoredUser(userId = externalId, identityHash = identityHash)"))
+    constructor(
+        externalId: String,
+        identityHash: String? = null,
+        @Suppress("UNUSED_PARAMETER") legacy: Unit = Unit,
+    ) : this(externalId, identityHash)
+
+    @Deprecated("Use userId", ReplaceWith("userId"))
+    val externalId: String get() = userId
+}
 
 /**
  * 로그인 유저를 영속 저장하고 푸시 클릭을 보고하는 세션 계층.
  *
  * 저장한 유저를 **클릭에 실어 보내지 않는다**. 서버가 신뢰하는 것은 디바이스 바인딩이고,
- * 클라이언트가 주장하는 external_id 를 믿으면 등록 시 identity_hash 로 막아둔 사칭이
+ * 클라이언트가 주장하는 user_id 를 믿으면 등록 시 identity_hash 로 막아둔 사칭이
  * 클릭 경로로 다시 열린다. 저장한 유저는 **바인딩을 최신으로 유지**하는 데만 쓴다.
  *
  * 네트워크를 타므로 메인 스레드에서 호출하지 말 것.
@@ -51,7 +62,8 @@ class NotikitSession @JvmOverloads constructor(
         val raw = storage.get(USER_KEY) ?: return null
         return try {
             val o = JSONObject(raw)
-            StoredUser(o.getString("externalId"), o.optString("identityHash").ifEmpty { null })
+            val id = userIdOf(o) ?: return null
+            StoredUser(id, o.optString("identityHash").ifEmpty { null })
         } catch (e: Exception) {
             null // 손상된 값은 조용히 버린다 — 저장소 파손이 SDK 를 죽이면 안 된다
         }
@@ -59,10 +71,10 @@ class NotikitSession @JvmOverloads constructor(
 
     /** 로그인 — 유저를 저장하고 디바이스를 그 유저에 바인딩한다. */
     suspend fun login(user: StoredUser, token: String) {
-        val o = JSONObject().put("externalId", user.externalId)
+        val o = JSONObject().put(USER_ID_FIELD, user.userId)
         user.identityHash?.let { o.put("identityHash", it) }
         storage.set(USER_KEY, o.toString())
-        client.registerDevice(token, platform, user.externalId, user.identityHash)
+        client.registerDevice(token, platform, user.userId, user.identityHash)
         // 밀린 언바인딩은 **새 바인딩이 실제로 서버에 반영된 뒤에만** 버린다.
         // 먼저 지우면, 오프라인 로그아웃 후 오프라인 로그인이 실패했을 때 이전 유저의
         // 해제 요청이 사라져 서버는 기기를 계속 이전 유저로 본다.
@@ -159,7 +171,7 @@ class NotikitSession @JvmOverloads constructor(
         if (queue.length() == 0) return 0
 
         val now = System.currentTimeMillis()
-        val current = getUser()?.externalId
+        val current = getUser()?.userId
         val failed = JSONArray()
         var sent = 0
 
@@ -168,7 +180,7 @@ class NotikitSession @JvmOverloads constructor(
             if (now - c.optLong("at") >= QUEUE_TTL_MS) continue // 오래된 클릭은 버린다
             // 클릭 당시 유저와 지금 유저가 다르면 보내지 않는다 — 서버는 flush 시점의
             // 바인딩으로 유저를 해석하므로 다음 사람에게 귀속된다
-            val owner = c.optString("externalId").ifEmpty { null }
+            val owner = userIdOf(c)
             // 지금 보내면 다음 사람에게 귀속되므로 보내지 않되, **버리지도 않는다**.
             // 비로그인 상태의 탭이 오프라인으로 큐에 남았다가 로그인하면 owner(null)와
             // current 가 어긋나는데, 여기서 폐기하면 그 클릭이 영영 사라진다
@@ -212,7 +224,7 @@ class NotikitSession @JvmOverloads constructor(
     }
 
     private suspend fun enqueue(logId: String, token: String, destination: String?) = queueLock.withLock {
-        val owner = getUser()?.externalId
+        val owner = getUser()?.userId
         val queue = readQueue()
         // 같은 발송의 중복 클릭은 서버에서도 유니크로 걸리므로 큐 단계에서 미리 접는다
         for (i in 0 until queue.length()) {
@@ -224,7 +236,7 @@ class NotikitSession @JvmOverloads constructor(
             .put("token", token)
             .put("at", System.currentTimeMillis())
         destination?.let { entry.put("destination", it) }
-        owner?.let { entry.put("externalId", it) }
+        owner?.let { entry.put(USER_ID_FIELD, it) }
         queue.put(entry)
 
         val trimmed = if (queue.length() > QUEUE_MAX) {
@@ -234,6 +246,13 @@ class NotikitSession @JvmOverloads constructor(
     }
 
     private companion object {
+        const val USER_ID_FIELD = "userId"
+        // 이전 버전이 저장한 유저·큐 항목은 이 키를 쓴다 — 업데이트 뒤에도 읽혀야 한다
+        const val LEGACY_USER_ID_FIELD = "externalId"
+
+        fun userIdOf(o: JSONObject): String? =
+            o.optString(USER_ID_FIELD).ifEmpty { o.optString(LEGACY_USER_ID_FIELD) }.ifEmpty { null }
+
         const val USER_KEY = "notikit.user"
         const val QUEUE_KEY = "notikit.clickQueue"
         const val UNBIND_KEY = "notikit.pendingUnbind"

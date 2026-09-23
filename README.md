@@ -72,7 +72,7 @@ lifecycleScope.launch {
     notikit.registerDevice(
         token = token,
         platform = "android",
-        externalId = "user-123",
+        userId = "user-123", // 고객 서비스의 유저 id
         identityHash = "<서버계산 HMAC>",
     )
 }
@@ -110,13 +110,16 @@ io.execute(() -> notikit.registerDevice(token, "android", "user-123", hash));
 ## API
 | | 설명 |
 |---|---|
-| `registerDevice(token, platform, externalId?, identityHash?, ...)` | FCM 토큰 등록 |
-| `identify(externalId, identityHash?, attributes?)` | 유저 식별 |
+| `registerDevice(token, platform, userId?, identityHash?, ...)` | FCM 토큰 등록 |
+| `identify(userId, identityHash?, attributes?)` | 유저 식별 |
 | `subscribe(topic, token)` | 토픽 구독 |
 | `unsubscribe(topic, token)` | 토픽 구독 해지 |
 | `Notikit.customDataFromPayload(data)` | 받은 푸시에서 커스텀 필드(템플릿 필드 포함)만 꺼내기 |
 | `Notikit.deepLinkFromPayload(data)` | 받은 푸시의 딥링크 |
 
+- 유저 id 는 `userId`(요청 본문 `user_id`)로 넘긴다. 이전 이름 `externalId`(`external_id`)도
+  계속 동작하지만 deprecated 다 — `externalId =` 로 부르던 코드, `StoredUser(externalId = ...)`,
+  `StoredUser.externalId`, 이전 버전이 저장한 로그인 유저 모두 그대로 읽힌다.
 - `api-secret` 은 서버 전용 — 앱에는 넣지 마세요(공개 api-key 만).
 - 빌드: JDK 17 (툴체인 자동 provisioning). `gradle test`
 

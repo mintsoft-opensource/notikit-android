@@ -20,17 +20,41 @@ class NotikitBlocking(private val client: Notikit) {
     fun registerDevice(
         token: String,
         platform: String,
-        externalId: String? = null,
+        userId: String? = null,
         identityHash: String? = null,
         locale: String? = null,
         timezone: String? = null,
     ): JSONObject = runBlocking {
-        client.registerDevice(token, platform, externalId, identityHash, locale, timezone)
+        client.registerDevice(token, platform, userId, identityHash, locale, timezone)
     }
 
+    @Deprecated(
+        "Use userId",
+        ReplaceWith("registerDevice(token, platform, userId = externalId, identityHash = identityHash, locale = locale, timezone = timezone)"),
+    )
+    @JvmSynthetic
+    fun registerDevice(
+        token: String,
+        platform: String,
+        externalId: String?,
+        identityHash: String? = null,
+        locale: String? = null,
+        timezone: String? = null,
+        @Suppress("UNUSED_PARAMETER") legacy: Unit = Unit,
+    ): JSONObject = registerDevice(token, platform, externalId, identityHash, locale, timezone)
+
     @JvmOverloads
-    fun identify(externalId: String, identityHash: String? = null, attributes: Map<String, Any?>? = null): JSONObject =
-        runBlocking { client.identify(externalId, identityHash, attributes) }
+    fun identify(userId: String, identityHash: String? = null, attributes: Map<String, Any?>? = null): JSONObject =
+        runBlocking { client.identify(userId, identityHash, attributes) }
+
+    @Deprecated("Use userId", ReplaceWith("identify(userId = externalId, identityHash = identityHash, attributes = attributes)"))
+    @JvmSynthetic
+    fun identify(
+        externalId: String,
+        identityHash: String? = null,
+        attributes: Map<String, Any?>? = null,
+        @Suppress("UNUSED_PARAMETER") legacy: Unit = Unit,
+    ): JSONObject = identify(externalId, identityHash, attributes)
 
     fun ping(token: String): JSONObject = runBlocking { client.ping(token) }
 
