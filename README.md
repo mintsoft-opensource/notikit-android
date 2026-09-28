@@ -2,6 +2,8 @@
 
 > Notikit Android SDK — 유저 중심 푸시 디바이스 등록/식별. Kotlin & Java 호환.
 
+[소개](https://notikit.mint-soft.com) · [서버](https://github.com/mintsoft-opensource/notikit) · 다른 SDK: [JS](https://github.com/mintsoft-opensource/notikit-js) · [iOS](https://github.com/mintsoft-opensource/notikit-ios) · [Flutter](https://github.com/mintsoft-opensource/notikit-flutter)
+
 ## 알림 탭 자동 보고
 
 `Application` 에서 한 번 설치하면 **콜드 스타트** 탭이 자동으로 보고된다. 앱 코드에서
