@@ -61,7 +61,7 @@ publishing {
             pom {
                 name.set("Notikit Android SDK")
                 description.set("Notikit Android SDK — push device registration, user identity, and automatic notification tap reporting.")
-                url.set("https://github.com/notikit/notikit")
+                url.set("https://github.com/mintsoft-opensource/notikit-android")
                 licenses {
                     license {
                         name.set("The Apache License, Version 2.0")
@@ -72,13 +72,13 @@ publishing {
                     developer {
                         id.set("notikit")
                         name.set("notikit contributors")
-                        url.set("https://github.com/notikit")
+                        url.set("https://github.com/mintsoft-opensource")
                     }
                 }
                 scm {
-                    url.set("https://github.com/notikit/notikit")
-                    connection.set("scm:git:https://github.com/notikit/notikit.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/notikit/notikit.git")
+                    url.set("https://github.com/mintsoft-opensource/notikit-android")
+                    connection.set("scm:git:https://github.com/mintsoft-opensource/notikit-android.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/mintsoft-opensource/notikit-android.git")
                 }
             }
         }

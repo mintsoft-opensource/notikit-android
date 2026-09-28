@@ -49,12 +49,24 @@ Activity 가 FCM data 를 Intent extras 로 달고 실행되므로, Activity 생
 extras 에서 발송 id 를 찾는다. 같은 Intent 를 재개 때마다 다시 세지 않도록 처리 표식을
 남긴다.
 
-## 설치 (Maven / JitPack)
+## 설치 (JitPack)
 ```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io")
+    }
+}
+
+// build.gradle.kts
 dependencies {
-    implementation("dev.notikit:notikit:0.1.0")
+    implementation("com.github.mintsoft-opensource:notikit-android:0.1.0")
 }
 ```
+
+Maven Central(`dev.notikit:notikit`) 배포는 아직이다.
 
 ## 사용 (Kotlin)
 
