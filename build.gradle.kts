@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "dev.notikit"
-version = "0.1.0"
+version = "0.2.0"
 
 /**
  * Android 라이브러리로 빌드하는 이유: 알림 탭 자동 후킹에 android.app.Application 의

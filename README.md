@@ -64,7 +64,7 @@ dependencyResolutionManagement {
 
 // build.gradle.kts
 dependencies {
-    implementation("com.github.mintsoft-opensource:notikit-android:0.1.0")
+    implementation("com.github.mintsoft-opensource:notikit-android:0.2.0")
 }
 ```
 
