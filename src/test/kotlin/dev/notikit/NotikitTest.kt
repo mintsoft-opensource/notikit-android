@@ -18,6 +18,20 @@ class FakeTransport(private val status: Int, private val body: String) : HttpTra
     }
 }
 
+/** 경로별로 응답을 정하고 보낸 요청을 순서대로 기록한다 */
+class RoutingTransport(private val route: (path: String) -> HttpResponse) : HttpTransport {
+    val calls = mutableListOf<Pair<String, JSONObject>>()
+    override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse {
+        val path = url.substringAfter("https://push.test")
+        calls.add(path to JSONObject(body))
+        return route(path)
+    }
+    fun paths() = calls.map { it.first }
+}
+
+private fun okJson(data: String = "{}") = HttpResponse(200, """{"success":true,"data":$data,"error":null}""")
+private fun failJson(status: Int) = HttpResponse(status, """{"success":false,"data":null,"error":"x"}""")
+
 class NotikitTest {
     @Test
     fun registerDeviceSendsApiKeyAndPayload() = runTest {
@@ -57,6 +71,7 @@ class NotikitTest {
             "google.message_id" to "x",
             "gcm.n.e" to "1",
             "from" to "123",
+            "actions" to """[{"id":"a","title":"A"}]""",
             "order_id" to "A-1",
             "screen" to "order",
         )
@@ -176,6 +191,148 @@ class NotikitTest {
 
         assertEquals(1, session.flush())
         assertEquals("l1", JSONObject(fake.lastBody!!).getString("log_id"))
+    }
+
+    @Test
+    fun rotateNotRotatedFallsBackToRegisterAndMovesQueue() = runTest {
+        val t = RoutingTransport { p -> if (p == "/api/v1/devices/rotate") okJson("""{"rotated":false}""") else okJson() }
+        val storage = MemoryStorage()
+        storage.set("notikit.user", """{"userId":"u1","identityHash":"h"}""")
+        val now = System.currentTimeMillis()
+        storage.set("notikit.clickQueue", """[{"logId":"l1","token":"old","at":$now,"userId":"u1"}]""")
+        val session = NotikitSession(Notikit("https://push.test", "nk", transport = t), storage)
+
+        session.rotateToken("old", "new")
+
+        assertEquals(listOf("/api/v1/devices/rotate", "/api/v1/devices"), t.paths())
+        val reg = t.calls[1].second
+        assertEquals("new", reg.getString("token"))
+        assertEquals("u1", reg.getString("user_id"))
+        assertEquals("h", reg.getString("identity_hash"))
+        assertEquals("new", org.json.JSONArray(storage.get("notikit.clickQueue")!!).getJSONObject(0).getString("token"))
+    }
+
+    @Test
+    fun rotateFallbackFailureKeepsQueueAndThrows() = runTest {
+        val t = RoutingTransport { p -> if (p == "/api/v1/devices/rotate") okJson("""{"rotated":false}""") else failJson(403) }
+        val storage = MemoryStorage()
+        val now = System.currentTimeMillis()
+        storage.set("notikit.clickQueue", """[{"logId":"l1","token":"old","at":$now}]""")
+        val session = NotikitSession(Notikit("https://push.test", "nk", transport = t), storage)
+
+        assertFailsWith<NotikitException> { session.rotateToken("old", "new") }
+        assertEquals("old", org.json.JSONArray(storage.get("notikit.clickQueue")!!).getJSONObject(0).getString("token"))
+    }
+
+    @Test
+    fun rotateSameTokenSendsNothing() = runTest {
+        val t = RoutingTransport { okJson() }
+        NotikitSession(Notikit("https://push.test", "nk", transport = t), MemoryStorage()).rotateToken("a", "a")
+        assertTrue(t.calls.isEmpty())
+    }
+
+    @Test
+    fun rotatedMovesPendingUnbindToken() = runTest {
+        val t = RoutingTransport { okJson("""{"rotated":true}""") }
+        val storage = MemoryStorage()
+        storage.set("notikit.pendingUnbind", """{"token":"old","identityHash":"h","at":1}""")
+        NotikitSession(Notikit("https://push.test", "nk", transport = t), storage).rotateToken("old", "new")
+
+        val pending = JSONObject(storage.get("notikit.pendingUnbind")!!)
+        assertEquals("new", pending.getString("token"))
+        assertEquals("h", pending.getString("identityHash"))
+        assertEquals(1L, pending.getLong("at"))
+    }
+
+    @Test
+    fun rotateFallbackLeavesPendingUnbindOnOldToken() = runTest {
+        val t = RoutingTransport { p -> if (p == "/api/v1/devices/rotate") okJson("""{"rotated":false}""") else okJson() }
+        val storage = MemoryStorage()
+        storage.set("notikit.pendingUnbind", """{"token":"old","at":1}""")
+        NotikitSession(Notikit("https://push.test", "nk", transport = t), storage).rotateToken("old", "new")
+        assertEquals("old", JSONObject(storage.get("notikit.pendingUnbind")!!).getString("token"))
+    }
+
+    @Test
+    fun pendingUnbindDroppedOnNonRetryable4xx() = runTest {
+        val storage = MemoryStorage()
+        storage.set("notikit.pendingUnbind", """{"token":"t1","at":1}""")
+        NotikitSession(Notikit("https://push.test", "nk", transport = RoutingTransport { failJson(403) }), storage).flush()
+        assertEquals(null, storage.get("notikit.pendingUnbind"))
+    }
+
+    @Test
+    fun pendingUnbindKeptOnServerErrorAndRateLimit() = runTest {
+        for (status in listOf(500, 429)) {
+            val storage = MemoryStorage()
+            storage.set("notikit.pendingUnbind", """{"token":"t1","at":1}""")
+            NotikitSession(Notikit("https://push.test", "nk", transport = RoutingTransport { failJson(status) }), storage).flush()
+            assertTrue(storage.get("notikit.pendingUnbind") != null, "status $status")
+        }
+    }
+
+    @Test
+    fun reportReceivedSendsOnceAndSkipsDuplicates() = runTest {
+        val t = RoutingTransport { okJson("""{"recorded":true}""") }
+        val notikit = Notikit("https://push.test", "nk", transport = t)
+
+        val first = notikit.reportReceived("log1", "t1")
+        val second = notikit.reportReceived("log1", "t1")
+
+        assertEquals(true, first?.getBoolean("recorded"))
+        assertEquals(null, second)
+        assertEquals(listOf("/api/v1/messages/received"), t.paths())
+        assertEquals("log1", t.calls[0].second.getString("log_id"))
+        assertEquals("t1", t.calls[0].second.getString("token"))
+        assertEquals(null, notikit.reportReceived("", "t1"))
+        assertEquals(1, t.calls.size)
+    }
+
+    @Test
+    fun reportReceivedRetriesAfterServerError() = runTest {
+        var status = 500
+        val t = RoutingTransport { if (status == 500) failJson(500) else okJson("""{"recorded":true}""") }
+        val notikit = Notikit("https://push.test", "nk", transport = t)
+
+        assertFailsWith<NotikitException> { notikit.reportReceived("log1", "t1") }
+        status = 200
+        assertEquals(true, notikit.reportReceived("log1", "t1")?.getBoolean("recorded"))
+        assertEquals(2, t.calls.size)
+    }
+
+    @Test
+    fun reportReceivedRetriesAfterNetworkError() = runTest {
+        var fail = true
+        val t = object : HttpTransport {
+            var count = 0
+            override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse {
+                count++
+                if (fail) throw java.io.IOException("offline")
+                return okJson("""{"recorded":true}""")
+            }
+        }
+        val notikit = Notikit("https://push.test", "nk", transport = t)
+        assertFailsWith<java.io.IOException> { notikit.reportReceived("log1", "t1") }
+        fail = false
+        notikit.reportReceived("log1", "t1")
+        assertEquals(2, t.count)
+    }
+
+    @Test
+    fun reportReceivedRemembersOn4xx() = runTest {
+        val t = RoutingTransport { failJson(404) }
+        val notikit = Notikit("https://push.test", "nk", transport = t)
+        assertFailsWith<NotikitException> { notikit.reportReceived("log1", "t1") }
+        assertEquals(null, notikit.reportReceived("log1", "t1"))
+        assertEquals(1, t.calls.size)
+    }
+
+    @Test
+    fun blockingReportReceived() {
+        val t = RoutingTransport { okJson("""{"recorded":true}""") }
+        val blocking = NotikitBlocking(Notikit("https://push.test", "nk", transport = t))
+        assertEquals(true, blocking.reportReceived("log1", "t1")?.getBoolean("recorded"))
+        assertEquals(null, blocking.reportReceived("log1", "t1"))
     }
 
     private fun ok() = FakeTransport(200, """{"success":true,"data":{},"error":null}""")

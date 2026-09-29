@@ -108,6 +108,30 @@ class MyMessagingService : FirebaseMessagingService() {
 }
 ```
 
+서버가 교체하지 못하면(모르는 옛 토큰, identity 증명 실패 등) 세션이 새 토큰을 현재 유저로
+다시 등록한다. 교체나 재등록이 성공했을 때만 밀린 클릭이 새 토큰으로 옮겨진다.
+
+### 수신(도달) 보고
+
+`reportReceived` 를 부르지 않으면 콘솔의 **"도달" 수가 항상 0** 이다. FCM 접수는 기기가 꺼져
+있어도 성공하므로, 단말이 실제로 받았다는 보고가 따로 필요하다. 알림을 받은 순간에 부른다.
+같은 발송을 다시 부르면 요청 없이 `null` 을 돌려준다(재배달에 안전).
+
+```kotlin
+class MyMessagingService : FirebaseMessagingService() {
+    override fun onMessageReceived(message: RemoteMessage) {
+        val logId = Notikit.logIdFromPayload(message.data) ?: return
+        val token = currentFcmToken ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { notikit.reportReceived(logId, token) }
+        }
+    }
+}
+```
+
+`onMessageReceived` 는 data 메시지이거나 앱이 포그라운드일 때 불린다. notification 메시지를
+백그라운드에서 받으면 시스템 트레이가 직접 표시해 이 콜백이 불리지 않는다.
+
 ## 사용 (Java)
 
 Java 는 `suspend` 함수를 부를 수 없어 블로킹 파사드를 제공한다. **이름 그대로 막히므로
@@ -128,6 +152,7 @@ io.execute(() -> notikit.registerDevice(token, "android", "user-123", hash));
 | `identify(userId, identityHash?, attributes?)` | 유저 식별 |
 | `subscribe(topic, token)` | 토픽 구독 |
 | `unsubscribe(topic, token)` | 토픽 구독 해지 |
+| `reportReceived(logId, token)` | 수신(도달) 보고. 이미 보고한 발송이면 `null` |
 | `Notikit.customDataFromPayload(data)` | 받은 푸시에서 커스텀 필드(템플릿 필드 포함)만 꺼내기 |
 | `Notikit.deepLinkFromPayload(data)` | 받은 푸시의 딥링크 |
 

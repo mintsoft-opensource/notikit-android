@@ -71,6 +71,10 @@ class NotikitBlocking(private val client: Notikit) {
     @JvmOverloads
     fun reportClick(logId: String, token: String, destination: String? = null): JSONObject =
         runBlocking { client.reportClick(logId, token, destination) }
+
+    /** 이미 보고한 발송이면 요청 없이 null */
+    fun reportReceived(logId: String, token: String): JSONObject? =
+        runBlocking { client.reportReceived(logId, token) }
 }
 
 /**

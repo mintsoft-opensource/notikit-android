@@ -33,6 +33,9 @@ class Notikit @JvmOverloads constructor(
 ) {
     private val baseUrl: String = baseUrl.trimEnd('/')
 
+    /** 수신 보고 중복 방지 — 재배달된 푸시가 같은 요청을 다시 내보내지 않게 한다 */
+    private val receipts = ReceiptDedupe()
+
     /**
      * 모든 공개 메서드가 여기를 지난다. transport 가 블로킹이어도 **여기서 IO 로 옮기므로**
      * 호출부는 메인 스레드에서 불러도 안전하다. 예전에는 호출 스레드에서 그대로 막혀
@@ -180,6 +183,30 @@ class Notikit @JvmOverloads constructor(
         return post("/api/v1/messages/click", body)
     }
 
+    /**
+     * 푸시 **수신** 보고 — 단말이 실제로 알림을 받았다는 사실을 남긴다.
+     *
+     * FCM 접수(발송 성공)는 기기가 꺼져 있어도, 앱이 지워져 있어도 성공한다. 앱이 이걸
+     * 부르지 않으면 콘솔의 "도달" 칸은 영원히 0 이다. 부르는 자리는 **알림을 받은 순간**,
+     * 곧 `FirebaseMessagingService.onMessageReceived` 다.
+     *
+     * 같은 발송을 두 번 이상 부르면 **요청을 내보내지 않고** null 을 돌려준다(로컬 중복 방지).
+     * 서버도 `(발송, 기기)` 유니크로 한 번만 센다 — 로컬 기억은 낭비되는 요청을 없애는 쪽이다.
+     *
+     * @return 보고했으면 서버 응답(`recorded`), 이미 보고한 발송이면 null
+     */
+    suspend fun reportReceived(logId: String, token: String): JSONObject? {
+        if (!receipts.claim(logId)) return null
+        return try {
+            post("/api/v1/messages/received", JSONObject().put("log_id", logId).put("token", token))
+        } catch (e: Exception) {
+            // 4xx 는 다시 보내도 같은 답이다(없는 발송·수신자 아님·형식 오류) — 기억을 유지해
+            // 재배달마다 같은 요청을 반복하지 않는다. 네트워크 장애·5xx·429 만 풀어 준다.
+            if (e !is NotikitException || e.status >= 500 || e.status == 429) receipts.release(logId)
+            throw e
+        }
+    }
+
     companion object {
         /** 푸시 페이로드에서 notikit 이 예약해 쓰는 data 키 */
         const val LOG_ID_KEY: String = "notikit_log_id"
@@ -196,7 +223,7 @@ class Notikit @JvmOverloads constructor(
 
         /** notikit·FCM 이 쓰는 키. 이것을 뺀 나머지가 발송 때 넣은 커스텀 필드다(서버의 금지 키 목록과 같다). */
         private val INTERNAL_KEYS = setOf(
-            "deep_link", LOG_ID_KEY, "title", "body", "icon", "image",
+            "deep_link", LOG_ID_KEY, "actions", "title", "body", "icon", "image",
             "from", "collapse_key", "notification", "message_type", "fcm_options",
         )
         private val INTERNAL_PREFIXES = listOf("google.", "gcm.")
@@ -208,6 +235,38 @@ class Notikit @JvmOverloads constructor(
         @JvmStatic
         fun customDataFromPayload(data: Map<String, String>?): Map<String, String> =
             data.orEmpty().filterKeys { k -> k !in INTERNAL_KEYS && INTERNAL_PREFIXES.none { k.startsWith(it) } }
+    }
+}
+
+/**
+ * 수신 보고 중복 방지 — "이 발송은 이미 보고했다"를 프로세스 안에서만 기억한다.
+ *
+ * FCM 은 같은 메시지를 다시 배달할 수 있다. 서버가 한 번만 세므로 도달 수가 부풀지는
+ * 않지만, 기억하지 않으면 재배달마다 요청이 한 번씩 더 나가 수신 보고 rate limit 을 깎는다.
+ * 영속 저장은 쓰지 않는다 — 여기서 놓친 중복은 낭비된 요청 한 건으로 끝나고, 잘못 기억해
+ * **보고를 영영 빠뜨리는 쪽**이 더 나쁘다.
+ */
+internal class ReceiptDedupe(private val max: Int = RECEIPT_DEDUPE_SIZE) {
+    // LinkedHashSet 은 삽입 순서를 지킨다 — 가장 오래 전에 본 것부터 버린다
+    private val seen = LinkedHashSet<String>()
+
+    /** 처음 보는 발송이면 기억하고 true. 이미 본 발송(또는 빈 id)이면 false. 보고 **전에** 잡는다. */
+    @Synchronized
+    fun claim(logId: String): Boolean {
+        if (logId.isEmpty() || !seen.add(logId)) return false
+        if (seen.size > max) seen.remove(seen.first())
+        return true
+    }
+
+    /** 다시 시도할 가치가 있는 이유(네트워크·5xx·429)로 실패했을 때만 기억을 되돌린다 */
+    @Synchronized
+    fun release(logId: String) {
+        seen.remove(logId)
+    }
+
+    companion object {
+        /** 한 프로세스가 기억하는 발송 id 수. 넘으면 오래된 것부터 버린다. */
+        const val RECEIPT_DEDUPE_SIZE = 200
     }
 }
 

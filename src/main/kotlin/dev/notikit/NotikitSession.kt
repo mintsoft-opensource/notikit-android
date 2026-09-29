@@ -87,18 +87,40 @@ class NotikitSession @JvmOverloads constructor(
      * 서버에서 기존 기기 행을 갱신하고, **밀린 클릭의 토큰도 함께 바꾼다**. 큐는
      * 클릭 당시 토큰을 들고 있어서, 교체 후 그대로 보내면 서버가 기기를 못 찾아
      * 404 를 주고 4xx 정책에 걸려 전부 버려진다.
+     *
+     * 서버는 교체하지 못해도(모르는 옛 토큰·identity 증명 실패·충돌) 202 `rotated:false` 로
+     * 답한다 — 오라클을 막으려고 응답을 가르지 않기 때문이다. 이를 성공으로 보면 새 토큰이
+     * 어디에도 등록되지 않아 이 기기가 발송에서 통째로 빠진다. 그래서 새 토큰을 현재
+     * 유저로 **다시 등록**하고, 교체나 재등록이 실제로 성공했을 때만 큐를 옮긴다.
      */
     suspend fun rotateToken(oldToken: String, newToken: String) {
-        client.rotateToken(oldToken, newToken, getUser()?.identityHash)
+        if (oldToken == newToken) return
+        val user = getUser()
+        val rotated = client.rotateToken(oldToken, newToken, user?.identityHash).optBoolean("rotated", false)
+        // 실패하면 예외가 그대로 올라가고 아무것도 옮기지 않는다
+        if (!rotated) client.registerDevice(newToken, platform, user?.userId, user?.identityHash)
+
         queueLock.withLock {
             val queue = readQueue()
-            if (queue.length() == 0) return@withLock
-            for (i in 0 until queue.length()) {
-                val c = queue.optJSONObject(i) ?: continue
-                if (c.optString("token") == oldToken) c.put("token", newToken)
+            if (queue.length() > 0) {
+                for (i in 0 until queue.length()) {
+                    val c = queue.optJSONObject(i) ?: continue
+                    if (c.optString("token") == oldToken) c.put("token", newToken)
+                }
+                storage.set(QUEUE_KEY, queue.toString())
             }
-            storage.set(QUEUE_KEY, queue.toString())
+            // 밀린 언바인딩은 **제자리 교체됐을 때만** 새 토큰으로 옮긴다 — 그 행이 이제 새 토큰을
+            // 들고 있다. 재등록으로 넘어갔으면 이전 바인딩은 옛 토큰 행에 그대로 남아 있으므로
+            // 해제도 옛 토큰에 걸려 있어야 한다(새 행은 현재 상태로 막 등록됐다).
+            if (rotated) movePendingUnbind(oldToken, newToken)
         }
+    }
+
+    private fun movePendingUnbind(oldToken: String, newToken: String) {
+        val raw = storage.get(UNBIND_KEY) ?: return
+        val o = try { JSONObject(raw) } catch (e: Exception) { return }
+        if (o.optString("token") != oldToken) return
+        storage.set(UNBIND_KEY, o.put("token", newToken).toString())
     }
 
     /**
@@ -212,8 +234,12 @@ class NotikitSession @JvmOverloads constructor(
         try {
             client.unbindDevice(token, platform, o.optString("identityHash").ifEmpty { null })
             storage.remove(UNBIND_KEY)
+        } catch (e: NotikitException) {
+            // 4xx 는 재시도해도 같다(identity 증명 실패 403 등) — 영원히 두드리지 않고 버린다.
+            // 429 와 5xx 는 다음 flush 에서 재시도한다.
+            if (e.status in 400..499 && e.status != 429) storage.remove(UNBIND_KEY)
         } catch (e: Exception) {
-            /* 다음 flush 에서 재시도 */
+            /* 네트워크 장애 — 다음 flush 에서 재시도 */
         }
     }
 
